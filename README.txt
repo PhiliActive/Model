@@ -7,7 +7,7 @@ The model is trained and evaluated on the **CASME II** dataset.
 
 Make sure all files and folders are placed in the **same directory**. Your folder should look like this:
 
-roject/
+Project/
 │── CASME2-coding-20140508.xlsx # Dataset encoding
 │── model_Update.py
 │── ckextended.csv # Dataset csv file
