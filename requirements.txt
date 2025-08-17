@@ -1,0 +1,14 @@
+# Requires Python >=3.8,<3.11
+# python 3.10 was used for development and testing
+
+numpy==1.26.4
+pandas==2.3.1
+opencv-python==4.12.0.88
+tensorflow==2.11.0
+keras==2.11.0
+scikit-learn==1.6.1
+matplotlib==3.10.5
+seaborn==0.13.2
+tqdm==4.67.1
+albumentations==2.0.8
+imbalanced-learn==0.13.0
