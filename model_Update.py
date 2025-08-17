@@ -3,24 +3,20 @@ import numpy as np
 import pandas as pd
 import cv2
 import tensorflow as tf
-from keras import layers, models, applications, optimizers, callbacks
+from keras import layers, models, optimizers, callbacks
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_curve, auc
-from sklearn.utils import class_weight
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_curve, roc_curve, auc
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm import tqdm
-from sklearn.model_selection import train_test_split
 import albumentations as A
 from imblearn.over_sampling import RandomOverSampler
+from tkinter import Tk, filedialog, Button, Label, Frame
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 tf.get_logger().setLevel('ERROR')
 
-# A class based depression detection model
 class DepressionDetectionModel:
-    def __init__(self, img_size=(64, 64), sequence_length=10, batch_size=4, epochs=1):
+    def __init__(self, img_size=(64, 64), sequence_length=10, batch_size=4, epochs=30):
         self.img_size = img_size
         self.sequence_length = sequence_length
         self.batch_size = batch_size
@@ -37,7 +33,6 @@ class DepressionDetectionModel:
         self.casme_path = 'CASME2_compressed'
         self.ckplus_path = 'ckextended.csv'
 
-# Load the posed expression dataset
     def _load_ckplus(self):
         data = pd.read_csv(self.ckplus_path)
         depression_emotions = [0, 2, 4]
@@ -52,7 +47,6 @@ class DepressionDetectionModel:
             y.append(label)
         return np.array(X), np.array(y)
 
-# Evaluate each dataset separately
     def evaluate_separately(self, X_test, y_test, source_labels):
         print("\nEvaluating by dataset source...")
         sources = np.unique(source_labels)
@@ -61,7 +55,6 @@ class DepressionDetectionModel:
             print(f"\nEvaluation for {source}:")
             self.evaluate(X_test[mask], y_test[mask])
 
-# Visualize the class distribution for depressed and non depressed
     def visualize_class_distribution(self, labels):
         sns.countplot(x=labels)
         plt.title("Class Distribution")
@@ -70,7 +63,6 @@ class DepressionDetectionModel:
         plt.ylabel("Frequency")
         plt.show()
 
-# Load Casme II dataset
     def load_data_sequences(self, xlsx_path='CASME2-coding-20140508.xlsx'):
         df = pd.read_excel(xlsx_path)
         depressive_emotions = ['sadness', 'fear', 'disgust']
@@ -108,7 +100,6 @@ class DepressionDetectionModel:
                     labels.append(label)
                     sources.append('CASME_II')
 
-        # Load CK+ data
         ckplus_images, ckplus_labels = self._load_ckplus()
         for img, label in zip(ckplus_images, ckplus_labels):
             seq = np.repeat(img[np.newaxis, ...], self.sequence_length, axis=0)
@@ -120,18 +111,14 @@ class DepressionDetectionModel:
         labels = np.array(labels)
         sources = np.array(sources)
 
-        # Visualise original class distribution
         print("Original label distribution:", np.bincount(labels))
         self.visualize_class_distribution(labels)
 
-        # Split into train/test (test set remains untouched)
         X_train, X_test, y_train, y_test, sources_train, sources_test = train_test_split(
             sequences, labels, sources, test_size=0.2, stratify=labels, random_state=42
         )
         self.test_sources = sources_test
 
-        # Apply oversampling only to training set
-        from imblearn.over_sampling import RandomOverSampler
         flat_train = X_train.reshape(X_train.shape[0], -1)
         ros = RandomOverSampler(random_state=42)
         flat_train_res, y_train_res = ros.fit_resample(flat_train, y_train)
@@ -140,12 +127,13 @@ class DepressionDetectionModel:
         print("After oversampling (train set):", np.bincount(y_train_res))
         self.visualize_class_distribution(y_train_res)
 
-        # Optional: Manual class weighting
-        self.class_weights = {0: 1.0, 1: 2.0}
+        from sklearn.utils.class_weight import compute_class_weight
+        classes = np.unique(y_train_res)
+        weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train_res)
+        self.class_weights = {cls: weight for cls, weight in zip(classes, weights)}
 
         return (X_train, y_train_res), (X_test, y_test)
 
-# Build a 3D CNN model
     def build_model(self):
         print("Building 3D CNN model...")
         input_shape = (self.sequence_length, self.img_size[0], self.img_size[1], 1)
@@ -164,17 +152,11 @@ class DepressionDetectionModel:
         self.model.compile(
             optimizer=optimizers.Adam(learning_rate=1e-4),
             loss='binary_crossentropy',
-            metrics=[
-                'accuracy',
-                tf.keras.metrics.AUC(name='auc'),
-                tf.keras.metrics.Precision(name='precision'),
-                tf.keras.metrics.Recall(name='recall')
-            ]
+            metrics=['accuracy', tf.keras.metrics.AUC(name='auc'), tf.keras.metrics.Precision(), tf.keras.metrics.Recall()]
         )
         print(self.model.summary())
         return self.model
 
-# Train the dataset
     def train(self, X_train, y_train, X_val, y_val):
         print("Training model...")
         callbacks_list = [
@@ -191,17 +173,16 @@ class DepressionDetectionModel:
             callbacks=callbacks_list,
             verbose=1
         )
-# Evaluate both dataset
+
     def evaluate(self, X_test, y_test):
         print("Evaluating model...")
         X_test = X_test[..., np.newaxis]
         y_prob = self.model.predict(X_test)
 
-        # Find best threshold based on F1
-        from sklearn.metrics import precision_recall_curve
         precision, recall, thresholds = precision_recall_curve(y_test, y_prob)
         f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
         best_threshold = thresholds[np.argmax(f1)]
+        self.best_threshold = best_threshold  # store best threshold
         print(f"Best Threshold (F1): {best_threshold:.2f}")
 
         y_pred = (y_prob > best_threshold).astype(int)
@@ -217,12 +198,10 @@ class DepressionDetectionModel:
         plt.title('Confusion Matrix')
         plt.show()
 
-        # ROC Curve
-        from sklearn.metrics import roc_curve, auc
         fpr, tpr, _ = roc_curve(y_test, y_prob)
         roc_auc = auc(fpr, tpr)
         plt.figure()
-        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f}')
         plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
         plt.xlabel('False Positive Rate')
         plt.ylabel('True Positive Rate')
@@ -231,10 +210,8 @@ class DepressionDetectionModel:
         plt.show()
 
     def visualize_activations(self, sequence):
-
         input_sequence = np.expand_dims(sequence, axis=0)[..., np.newaxis]
 
-        # Get output of last Conv3D layer
         last_conv_layer = None
         for layer in reversed(self.model.layers):
             if isinstance(layer, tf.keras.layers.Conv3D):
@@ -244,23 +221,19 @@ class DepressionDetectionModel:
             print("No Conv3D layer found.")
             return
 
-        grad_model = tf.keras.models.Model(
-            [self.model.inputs],
-            [self.model.get_layer(last_conv_layer).output, self.model.output]
-        )
+        grad_model = tf.keras.models.Model([self.model.inputs], [self.model.get_layer(last_conv_layer).output, self.model.output])
 
         with tf.GradientTape() as tape:
             conv_outputs, predictions = grad_model(input_sequence)
             loss = predictions[:, 0]
 
         grads = tape.gradient(loss, conv_outputs)
-
         if grads is None:
-            print("Gradient is None. Possibly due to model compilation or eager execution.")
+            print("Gradient is None.")
             return
 
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2, 3))  # reduce over batch, time, H, W
-        conv_outputs = conv_outputs[0].numpy()  # remove batch
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2, 3))
+        conv_outputs = conv_outputs[0].numpy()
         pooled_grads = pooled_grads.numpy()
 
         for i in range(pooled_grads.shape[-1]):
@@ -270,42 +243,83 @@ class DepressionDetectionModel:
         heatmap = np.maximum(heatmap, 0)
         heatmap /= np.max(heatmap) if np.max(heatmap) != 0 else 1
 
-        # Visualise on the centre frame
         center_frame = sequence[self.sequence_length // 2].squeeze()
-        plt.imshow(center_frame, cmap='gray')
-        plt.imshow(cv2.resize(heatmap[self.sequence_length // 2], (self.img_size[1], self.img_size[0])),
-                cmap='jet', alpha=0.5)
-        plt.title("Activation Heatmap")
-        plt.axis('off')
+        heatmap_resized = cv2.resize(heatmap[self.sequence_length // 2], (self.img_size[1], self.img_size[0]))
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[0].imshow(center_frame, cmap='gray')
+        axes[0].set_title("Original Frame")
+        axes[0].axis('off')
+
+        axes[1].imshow(center_frame, cmap='gray')
+        axes[1].imshow(heatmap_resized, cmap='jet', alpha=0.5)
+        axes[1].set_title("Activation Heatmap")
+        axes[1].axis('off')
+
+        plt.tight_layout()
         plt.show()
 
-        prediction = self.model.predict(input_sequence)[0][0]
-        print("Prediction:", "Depressed" if prediction > 0.5 else "Not Depressed", f"(Confidence: {prediction:.2f})")
+        threshold = getattr(self, "best_threshold", 0.5)
+        print("Prediction:", "Depressed" if predictions[0][0] > threshold else "Not Depressed", f"(Confidence: {predictions[0][0]:.2f})")
 
+    def predict_from_image(self, use_webcam=False):
+        if use_webcam:
+            print("Capturing image from webcam...")
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                print("Webcam could not be opened.")
+                return
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                print("Failed to capture image.")
+                return
+            img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            file_path = filedialog.askopenfilename(title='Select an Image File', filetypes=[("Image files", "*.jpg *.png *.jpeg")])
+            if not file_path:
+                print("No file selected.")
+                return
+            img = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                print("Failed to load image.")
+                return
 
+        img = cv2.resize(img, self.img_size)
+        img = img.astype('float32') / 255.0
+        sequence = np.repeat(img[np.newaxis, ...], self.sequence_length, axis=0)
 
-# Run the model.py
+        self.visualize_activations(sequence)
 
-# Instantiate the model
-detector = DepressionDetectionModel()
+def launch_gui(detector):
+    def on_upload():
+        detector.predict_from_image(use_webcam=False)
 
-# Load data
-(X_train, y_train), (X_test, y_test) = detector.load_data_sequences()
+    def on_webcam():
+        detector.predict_from_image(use_webcam=True)
 
-# Split train into train/val
-X_train, X_val, y_train, y_val = train_test_split(
-    X_train, y_train, test_size=0.2, stratify=y_train, random_state=42
-)
+    root = Tk()
+    root.title("Depression Detection GUI")
 
-# Build the model
-detector.build_model()
+    frame = Frame(root)
+    frame.pack(pady=20)
 
-# Train the model
-detector.train(X_train, y_train, X_val, y_val)
+    Label(frame, text="Choose input method for prediction:").pack(pady=10)
+    Button(frame, text="Upload Image", command=on_upload, width=20).pack(pady=5)
+    Button(frame, text="Use Webcam", command=on_webcam, width=20).pack(pady=5)
 
-# Evaluate CK+ vs CASME II separately
-detector.evaluate_separately(X_test, y_test, detector.test_sources)
+    root.mainloop()
 
-# Visualize prediction on a sample
-sample_idx = np.random.randint(len(X_test))
-detector.visualize_activations(X_test[sample_idx])
+if __name__ == '__main__':
+    detector = DepressionDetectionModel()
+    (X_train, y_train), (X_test, y_test) = detector.load_data_sequences()
+    X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2, stratify=y_train, random_state=42)
+
+    detector.build_model()
+    detector.train(X_train, y_train, X_val, y_val)
+    detector.evaluate_separately(X_test, y_test, detector.test_sources)
+
+    sample_idx = np.random.randint(len(X_test))
+    detector.visualize_activations(X_test[sample_idx])
+
+    launch_gui(detector)
